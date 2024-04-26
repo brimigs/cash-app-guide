@@ -1,37 +1,3 @@
----
-
-date: March 18, 2024
-difficulty: into
-title: "How to create a cash app on Solana"
-description:
-"Solana developer quickstart guide to learn how to create a cash app on the Solana blockchain."
-tags:
-
-- quickstart
-- dApp
-- payfi
-- anchor
-- rust
-- expo
-- react-native
-- sns
-- solana-pay
-  keywords:
-- solana name service
-- on-chain
-- rust
-- anchor program
-- cash app
-- mobile wallet adapter
-- create solana expo
-- tutorial
-- intro to solana development
-- blockchain developer
-- blockchain tutorial
-- web3 developer
-
----
-
 In this guide, you will learn how to create a react-native mobile app that is both android and ios compatible. This app will mimic a cash app experience but run on the solana blockchian, showcasing that web3 products can have the same user expereince as web2 products. To build this, we will need to write an anchor program with escrow functionality, integrate the solana name service sdk, and intergrate solana pay.
 
 ## What you will learn
