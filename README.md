@@ -80,7 +80,7 @@ use anchor_lang::prelude::*;
 declare_id!("7AGmMcgd1SjoMsCcXAAYwRgB9ihCyM8cZqjsUqriNRQt");
 
 #[program]
-pub mod journal {
+pub mod cash_app {
     use super::*;
 }
 ```
