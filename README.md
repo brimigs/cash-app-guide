@@ -134,7 +134,7 @@ pub struct InitializeAccount<'info> {
 
 ```
 
-Next we will need to add instructions into this program that allow a user to deposit funds into their cash account and withdrawal funds from their cash account:
+Next we will need to add an instruction to this program that allows a user to deposit funds into their cash account:
 
 ```rust
 #[program]
@@ -168,44 +168,6 @@ pub mod cash_app {
             .ok_or(ErrorCode::Overflow)?;
         Ok(())
     }
-
-    pub fn withdraw_funds(ctx: Context<WithdrawFunds>, amount: u64) -> Result<()> {
-        require!(amount > 0, ErrorCode::InvalidAmount);
-        let cash_account = &mut ctx.accounts.cash_account;
-
-        if cash_account.balance < amount {
-            return Err(ErrorCode::InsufficientFunds.into());
-        }
-
-        let ix = system_instruction::transfer(
-            cash_account.to_account_info().key,
-            &ctx.accounts.user.key(),
-            amount,
-        );
-
-        invoke(
-            &ix,
-            &[cash_account.to_account_info(), ctx.accounts.user.clone()],
-        )?;
-
-        cash_account.balance = cash_account
-            .balance
-            .checked_sub(amount)
-            .ok_or(ErrorCode::Overflow)?;
-        Ok(())
-    }
-}
-
-#[derive(Accounts)]
-pub struct WithdrawFunds<'info> {
-    #[account(mut)]
-    pub cash_account: Account<'info, CashAccount>,
-    #[account(mut)]
-    /// CHECK: This account is only used to transfer SOL, not for data storage.
-    pub user: AccountInfo<'info>,
-    pub system_program: Program<'info, System>,
-    // The owner of the cash_account must sign the transaction
-    pub owner: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -215,6 +177,50 @@ pub struct DepositFunds<'info> {
     #[account(mut)]
     /// CHECK: This account is only used to transfer SOL, not for data storage.
     pub user: AccountInfo<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+```
+
+Now lets add an instruction into this program that allow a user to deposit funds into their cash account:
+
+```rust
+#[program]
+pub mod cash_app {
+    use super::*;
+
+    ...
+
+    pub fn withdraw_funds(ctx: Context<WithdrawFunds>, amount: u64) -> Result<()> {
+        require!(amount > 0, ErrorCode::InvalidAmount);
+
+        let cash_account = ctx.accounts.cash_account.to_account_info();
+        let wallet = ctx.accounts.user.to_account_info();
+
+        **cash_account.try_borrow_mut_lamports()? -= amount;
+        **wallet.try_borrow_mut_lamports()? += amount;
+
+        ctx.accounts.cash_account.balance = ctx
+            .accounts
+            .cash_account
+            .balance
+            .checked_sub(amount)
+            .ok_or(ErrorCode::Overflow)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct WithdrawFunds<'info> {
+    #[account(
+        mut,
+        seeds = [b"cash-account", user.key().as_ref()],
+        bump,
+    )]
+    pub cash_account: Account<'info, CashAccount>,
+    #[account(mut)]
+    pub user: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -231,12 +237,18 @@ pub mod cash_app {
 
     pub fn transfer_funds(ctx: Context<TransferFunds>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
-        let from_cash_account = &mut ctx.accounts.from_cash_account;
         let to_cash_account = &mut ctx.accounts.to_cash_account;
+        let from_cash_account = &mut ctx.accounts.from_cash_account;
 
         if from_cash_account.balance < amount {
             return Err(ErrorCode::InsufficientFunds.into());
         }
+
+        let sender = from_cash_account.clone().to_account_info();
+        let recipient = to_cash_account.clone().to_account_info();
+
+        **sender.try_borrow_mut_lamports()? -= amount;
+        **recipient.try_borrow_mut_lamports()? += amount;
 
         from_cash_account.balance = from_cash_account
             .balance
@@ -253,13 +265,17 @@ pub mod cash_app {
 
 #[derive(Accounts)]
 pub struct TransferFunds<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"cash-account", user.key().as_ref()],
+        bump,
+    )]
     pub from_cash_account: Account<'info, CashAccount>,
     #[account(mut)]
     pub to_cash_account: Account<'info, CashAccount>,
     pub system_program: Program<'info, System>,
     // The owner of the from_cash_account must sign the transaction
-    pub owner: Signer<'info>,
+    pub user: Signer<'info>,
 }
 ```
 
