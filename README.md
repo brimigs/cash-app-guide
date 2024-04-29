@@ -182,6 +182,8 @@ pub struct DepositFunds<'info> {
 
 ```
 
+The `deposit_funds` function constructs a system instruction to transfer SOL from the user's wallet to the cash account's wallet. Then the transfer instruction is executed using `invoke`, which safely performs the cross-program invocation.
+
 Now lets add an instruction into this program that allow a user to deposit funds into their cash account:
 
 ```rust
@@ -225,6 +227,8 @@ pub struct WithdrawFunds<'info> {
 }
 
 ```
+
+The `withdraw_funds` funciton directly adjusts the lamports _(smallest unit of SOL)_ in the program-owned cash_account and the user's wallet.
 
 The last instruction needed to enable the basic functionalities defined is to be able to directly transfer funds from one user to another.
 
@@ -279,6 +283,8 @@ pub struct TransferFunds<'info> {
 }
 ```
 
-Note: If there is anyh confusion on the above anchor macros or structs defined for the instruiciton context, please refer to the [Basic CRUD dApp on Solana Guide.](https://github.com/solana-foundation/developer-content/blob/main/content/guides/dapps/journal.md#writing-a-solana-program-with-anchor)
+Note: In order to be able to send funds to another user, similar to Cash App, that user must have created an account. This is because we are sending funds to the user's `cash_account` PDA, not the user's wallet.
+
+If there is any confusion on the above anchor macros or structs defined for the instruiciton context, please refer to the [Basic CRUD dApp on Solana Guide.](https://github.com/solana-foundation/developer-content/blob/main/content/guides/dapps/journal.md#writing-a-solana-program-with-anchor)
 
 ## Section Two: Implementing an Escrow for Payment Protection
