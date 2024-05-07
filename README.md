@@ -35,22 +35,22 @@ For an introduction to solana mobile development, take a look at the solana mobi
 Let's start by quickly mapping out the entire dApp design. To create a clone of cash app, we want to have the following functionalities:
 
 1. Account Creation
-2. Deposit and Withdrawal Funds
-3. Peer-to-Peer Money Transfer
-4. Payment Protection
-5. QR Code Generation
-6. Connect with Friends
-7. Activity Tracking
+2. Deposit and Withdraw Funds
+3. User-to-User Money Transfer
+4. QR Code Generation
+5. Connect with Friends
+6. Activity Tracking
+7. Payment Protection
 
 To enable these functionalies, we will do the following:
 
 1. Write a solana program that allows for users to initialize a new account on-chain and set up a user name _(similar to $Cashtag)_ with [Solana Name Service](https://sns.guide/). With the username being set via SNS, you can then get publickey information direclty from an account's username.
 2. Add instructions to the solana program for a user to be able to deposit funds from their wallet into their cash account and withdrawal funds from their cash account into their wallet.
 3. Add instructions for a user to be able to directly send funds from their own cash account to another cash account, request funds from a specified cash account, and accept or decline payment requests.
-4. Create an escrow account within the program to be able to hold funds for a specifed period of time when requested by the user to enable payment protection. These payments will show as "pending" while they sit in the escrow allowing time for a user to revoke the payment if needed.
-5. Integrate [Solana Pay](https://docs.solanapay.com/) to enable QR code generation. Solana pay also allows you to specify the amount and memo for the requested transaction directly in the QR code.
-6. Update the solana program to save friends to your account state, which can then be displayed on the front end similar to cash app.
-7. Add an activity tab to showcase pending requests, pending payments, and recent transactions.
+4. Integrate [Solana Pay](https://docs.solanapay.com/) to enable QR code generation. Solana pay also allows you to specify the amount and memo for the requested transaction directly in the QR code.
+5. Add an instruction for a user to be able to add friends by pushing the user provided public key to a freinds vector saved to the user's account state, which can then be displayed on the front end similar to cash app.
+6. Add an activity tab that queries the cash account state of the connected user to show pending requests and pending payments.
+7. Create an escrow account within the program to be able to hold funds for a specifed period of time when requested by the user to enable payment protection. These payments will show as "pending" while they sit in the escrow allowing time for a user to revoke the payment if needed.
 
 ## Solana Mobile App Template Set Up
 
@@ -66,13 +66,13 @@ Follow the [Running the app](https://docs.solanamobile.com/react-native/expo#run
 
 Reminder: You must have [fake wallet](https://github.com/solana-mobile/mobile-wallet-adapter/tree/main/android/fakewallet) running on the same android emulator to be able to test out transactions, as explained in the [solana mobile development set up docs](https://docs.solanamobile.com/getting-started/development-setup).
 
-## Writing a Solana Program for Basic Cash App Functionalities
+## Writing a Solana Program for Cash App Functionalities
 
 We'll break up the solana program code into a few sections. To start off, lets just enable account creation, deposits, withdrawals, and direct transfers of funds to create a very basic version of cash app.
 
 Ensure you have the [anchor CLI](https://www.anchor-lang.com/docs/cli) installed, then create an anchor directory within `cash-app-clone`. Navigate into the directory and run `anchor init` to initalize a project workspace for the anchor solana program. Now create a `lib.rs` file and we'll get started with the program code.
 
-### Define your Anchor program
+### Define Your Anchor Program
 
 ```rust
 use anchor_lang::prelude::*;
@@ -85,7 +85,7 @@ pub mod cash_app {
 }
 ```
 
-### Define your program state
+### Define Your Program State
 
 To enable basic cash app functionalities for section one of this tutorial, we will want to save the following information to our cash account state:
 
@@ -100,7 +100,7 @@ pub struct CashAccount {
 
 Since we are able to directly query the balance of the PDA account, saving the account balance to the cash account state would just add unnecesasary calculations in future instructions.
 
-### Adding instructions
+### Add Instructions
 
 Now that the state is defined, we need to create an instruction to initalize an account when a new user signs up for cash app. This will initialize a new account and save the user's public key into the PDA of the user's cash account.
 
@@ -301,13 +301,107 @@ pub struct AddFriend<'info> {
 }
 ```
 
+### Integrating multiple accounts
+
 There are several different ways to approach requesting payments from friends. In this example, we will make each payment request its own PDA account in order to simplify querying active requests, deleting completed requests, and updating both the sender and recipent cash accounts. Since this goes beyond the basic solana program set up, we'll implement this later on in the tutorial.
 
-If there is any confusion on the above anchor macros, structs, or functions defined, please refer to the [Basic CRUD dApp on Solana Guide](https://github.com/solana-foundation/developer-content/blob/main/content/guides/dapps/journal.md#writing-a-solana-program-with-anchor) for a more granular explaination.
+Each time a new payment request is created, the instruction will create a new PDA account that holds data for the payment's sender, recipient, and amount.
+
+To have multiple account types within one program, you just need to define the data structure for each account type and have an seperate instructions to be able to initlize each account type. We already have the state data structure and init account instruction for the cash account, now we'll just add this for the pending request account.
+
+```rust
+#[account]
+#[derive(InitSpace)]
+pub struct PendingRequest {
+    pub sender: Pubkey,
+    pub recipient: Pubkey,
+    pub amount: u64,
+}
+
+#[derive(Accounts)]
+pub struct InitializeAccount<'info> {
+    #[account(
+        init,
+        seeds = [b"pending-request", user.key().as_ref()],
+        bump,
+        payer = user,
+        space = 8 + PendingRequest::INIT_SPACE
+    )]
+    pub pending_request: Account<'info, PendingRequest>,
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[program]
+pub mod cash_app {
+    use super::*;
+
+    ...
+
+    pub fn new_pending_request(ctx: Context<InitializeAccount>, recipient: Pubkey, amount: u64) -> Result<()> {
+        let pending_request = &mut ctx.accounts.pending_request;
+        pending_request.sender = *ctx.accounts.user.key;
+        pending_request.recipient = recipient;
+        pending_request.amount = amount;
+        Ok(())
+    }
+}
+```
+
+Now that we are able to send payment requests, we need to be able to accept or decline those payments. So let's add in those instructions now.
+
+```rust
+#[program]
+pub mod cash_app {
+    use super::*;
+
+    ...
+
+    pub fn accept_request(ctx: Context<ProcessRequest>) -> Result<()> {
+        let recipient = ctx.accounts.pending_request.recipient;
+        let amount = ctx.accounts.pending_request.amount;
+
+        transfer_funds(ctx, recipient, amount)
+
+        Ok(())
+    }
+
+    pub fn decline_request(_ctx: Context<ProcessRequest>) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct ProcessRequest<'info> {
+    #[account(
+        mut,
+        seeds = [b"pending-request", user.key().as_ref()],
+        bump,
+        close = user,
+    )]
+    pub pending_request: Account<'info, PendingRequest>,
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+```
+
+In the above code, all we need to do to decline a request is to close the account on chain, by specifying the `close` constraint in the account macro for the `DeclineRequest` data structure, the account simply closes when the correct signer signs the `decline_request` instruction.
+
+For `pending_requests`, we also want the account to close upon completion of the instruction but the requested funds need to be transfered first. We can just get the needed information from the account state and call the `trasnsfer_funds` function we defined earlier.
+
+We're now able to deposit funds, withdraw funds, send funds to another user, request funds from another user, add friends, and accept/decline requests, which covers all of the functionaltiy in cash app.
+
+### Additional Solana Program Development Information
+
+If there is any confusion on the above anchor macros, structs, or functions defined, please refer to the [Basic CRUD dApp on Solana Guide](https://github.com/solana-foundation/developer-content/blob/main/content/guides/dapps/journal.md#writing-a-solana-program-with-anchor) for a guide with a more granular explaination.
 
 Creating tests is out of scope for this guide, however, it is important to prioritize testing when developing a solana program. For information on testing with anchor, read these docs:
 
 // FIXME: Do we have solana docs on anchor testing?? I thought we did but cant find them.
+
+For more in-depth understanding of the anchor framework, review [The Anchor Book](https://book.anchor-lang.com/).
 
 ## Connecting a Solana Program to a React-Native Expo App
 
@@ -904,20 +998,428 @@ export function AccountButtonGroup({ address }: { address: PublicKey }) {
 
 That wraps up all the functionality we need on the home screen for a cash app clone. Now we can move onto the pay screen, which involves transfering funds from one user to another.
 
+Now lets create the components needed for the pay screen. In cash app, the pay screen is simply a key pad with `request` and `pay` buttons that redirect you to another screen.
+
+So the pay screen is mainly some UI work. We need to be able to type in a numerical value via a keyboard, handle the input value, select currency via a small modal, and navigate to the request and pay pages via buttons. Here is the code below:
+
+```typescript
+type HomeScreenNavigationProp = NativeStackNavigationProp<
+  RootStackParamList,
+  "Home"
+>;
+
+type Props = {
+  navigation: HomeScreenNavigationProp;
+};
+
+const App: React.FC<Props> = ({ navigation }) => {
+  const [inputValue, setInputValue] = useState("");
+  const [modalVisible, setModalVisible] = useState(false);
+
+  // Function to handle input from keypad
+  const handleInput = (value: string) => {
+    setInputValue(inputValue + value);
+  };
+
+  // Function to handle backspace
+  const handleBackspace = () => {
+    setInputValue(inputValue.slice(0, -1));
+  };
+
+  type NumberButtonProps = {
+    number: string;
+  };
+
+  // Create a single button for the keypad
+  const NumberButton: React.FC<NumberButtonProps> = ({ number }) => (
+    <TouchableOpacity style={styles.button} onPress={() => handleInput(number)}>
+      <Text style={styles.buttonText}>{number}</Text>
+    </TouchableOpacity>
+  );
+
+  const CurrencySelectorModal = () => (
+    <Modal
+      animationType="slide"
+      transparent={true}
+      visible={modalVisible}
+      onRequestClose={() => {
+        setModalVisible(!modalVisible);
+      }}
+    >
+      <View style={styles.bottomView}>
+        <View style={styles.modalView}>
+          <Text style={styles.buttonText}>Select Currency</Text>
+          <View style={styles.centeredView}>
+            <TouchableOpacity
+              style={styles.fullWidthButton}
+              onPress={() => setModalVisible(false)}
+            >
+              <Text style={styles.currencyText}>
+                {" "}
+                <MaterialCommunityIcon
+                  name="currency-usd"
+                  size={30}
+                  color="white"
+                />
+                US Dollars
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.fullWidthButton}
+              onPress={() => setModalVisible(false)}
+            >
+              <Text style={styles.currencyText}>
+                {" "}
+                <MaterialCommunityIcon name="bitcoin" size={30} color="white" />
+                Bitcoin
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            style={{ position: "absolute", bottom: 25 }}
+            onPress={() => setModalVisible(false)}
+          >
+            <Text style={styles.mediumButtonText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  return (
+    <View style={styles.container}>
+      <CurrencySelectorModal />
+      <View style={styles.displayContainer}>
+        <Text style={styles.displayText}>${inputValue || "0"}</Text>
+        <TouchableOpacity
+          style={{ position: "relative", marginTop: 15 }}
+          onPress={() => setModalVisible(true)}
+        >
+          <Text style={styles.smallButtonText}>
+            USD{" "}
+            <MaterialCommunityIcon
+              name="chevron-down"
+              size={15}
+              color="white"
+            />
+          </Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.keypad}>
+        <View style={styles.row}>
+          {[1, 2, 3].map((number) => (
+            <NumberButton key={number} number={number.toString()} />
+          ))}
+        </View>
+        <View style={styles.row}>
+          {[4, 5, 6].map((number) => (
+            <NumberButton key={number} number={number.toString()} />
+          ))}
+        </View>
+        <View style={styles.row}>
+          {[7, 8, 9].map((number) => (
+            <NumberButton key={number} number={number.toString()} />
+          ))}
+        </View>
+        <View style={styles.row}>
+          <NumberButton number="." />
+          <NumberButton number="0" />
+          <TouchableOpacity style={styles.button} onPress={handleBackspace}>
+            <Text style={styles.buttonText}>⌫</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+      <View style={styles.buttonRow}>
+        <Button
+          mode="contained"
+          style={styles.sideButton}
+          onPress={() => navigation.navigate("Receive", { inputValue })}
+        >
+          Request
+        </Button>
+        <Button
+          mode="contained"
+          style={styles.sideButton}
+          onPress={() => navigation.navigate("Send", { inputValue })}
+        >
+          Pay
+        </Button>
+      </View>
+    </View>
+  );
+};
+```
+
+Now the request and pay pages is where the real logic comes in and the program interaction.
+
+For the pay page, we'll need to implement the `transferFunds` function from the cash app solana program. To do this, we'll be using the same process that was described for `depositFunds`. However, the `TransferFunds` struct described in the CashApp Solana Program requires 2 accounts rather than the one account that is required for `depositFunds`. So what needs to change is simply to add calculations of the PDAs of both the sender account and the recipient's account, as shown below:
+
+```typescript
+const [recipientPDA] = useMemo(() => {
+  const counterSeed = recipient.toBuffer();
+  return PublicKey.findProgramAddressSync([counterSeed], cashAppProgramId);
+}, [cashAppProgramId]);
+
+const transferInstruction = await program.methods
+  .transferFunds(pubkey, newTransferAmount)
+  .accounts({
+    user: authorizationResult.publicKey,
+    fromCashAccount: cashAppPDA,
+    toCashAccount: recipientPDA,
+  })
+  .instruction();
+```
+
+In order to calculate the recipient's PDA, the public key of the recipient must be passed through as a parameter of the `transferFunds` function, along with the amount to transfer and the public key of the signer.
+
 ## Enabling QR Code functionality with Solana Pay
 
-To mimic the QR code funcitonality in Cash App, you can simply use the `@solana/pay` JavaScript library.
+To mimic the QR code funcitonality in Cash App, you can simply use the `@solana/pay` JavaScript SDK. For more information, refer to the [Solana Pay API Reference](https://docs.solanapay.com/api/core).
 
-The `encodeURL` function takes in an amount and a memo and generates a QR code for that specifc transaction.
+The `encodeURL` function takes in an amount and a memo to encode a Solana Pay URL for a specifc transaction.
 
-As of today, Solana Pay's current version of the `createQR` funciton is not compatible with react-native, so we will need to use a different QR code generator that is react-native compatible. We can just input the url into `QRCode` from `react-native-qrcode-svg`.
+Typically, this function is paired with `createQR` to generate a QR code with the Solana Pay URL. As of today, Solana Pay's current version of the `createQR` funciton is not compatible with react-native, so we will need to use a different QR code generator that is react-native compatible. In this guide, we'll input the url into `QRCode` from `react-native-qrcode-svg`. It does not have the same QR code styling as the Solana Pay `createQR`, but it still correctly generates the needed QR code.
 
-We'll set this up in a new screen on the dApp:
+For simplicity, this functionality will live on its own screen, which we already defined earlier as the Scan Screen. Similarly to the home screen, navigate to `ScanScreen.tsx` and set up the following function:
 
-Create a new file `src/components/solana-pay/solana-pay-ui.tsx`.
+```typescript
+export function ScanScreen() {
+  const { selectedAccount } = useAuthorization();
 
-## Connecting User Names with Publickeys via Solana Name Service
+  return (
+    <View style={styles.container}>
+      {selectedAccount ? (
+        <View style={styles.container}>
+          <SolanaPayButton address={selectedAccount.publicKey} />
+        </View>
+      ) : (
+        <>
+          <Text style={styles.headerTextLarge}>Solana Cash App</Text>
+          <Section description="Sign in with Solana (SIWS) to link your wallet." />
+          <SignInFeature />
+        </>
+      )}
+    </View>
+  );
+}
+```
+
+Now we need to create the `SolanaPayButton` component. Create a file under `src/components/solana-pay/solana-pay-ui.tsx`. In cash app, the QR code is just a link to the users cash app profile and is a static image in the app. However, the solana pay QR code is actually uniquely generated for each requested transaction, so the QR displayed includes the amount, memo, and the recipient's publickey information. So our UI/UX will function slightly different than cash app in this section.
+
+To still follow the look and feel of cash app, we'll allow most of the screen to display the QR code and have a button at the bottom for a modal that has amount and memo input fields and a generate QR code button. On clicking the "Create QR" button, we'll want to generate a new Solana Pay URL and send that value outside of the modal to the Scan Screen so that the screen will render and display the new QR code.
+
+We can do this with the solana pay api, state handling, conditional rendering, and data submission between the two components, as shown below:
+
+```typescript
+export function SolanaPayButton({ address }: { address: PublicKey }) {
+  const [showPayModal, setShowPayModal] = useState(false);
+
+  const [url, setUrl] = useState("");
+
+  return (
+    <>
+      <View>
+        <View
+          style={{
+            height: 200,
+            width: 200,
+            justifyContent: "center",
+            alignItems: "center",
+            alignSelf: "center",
+            marginBottom: 200,
+            marginTop: 200,
+          }}
+        >
+          {url ? (
+            <>
+              <View
+                style={{
+                  height: 350,
+                  width: 350,
+                  justifyContent: "center",
+                  alignItems: "center",
+                  alignSelf: "center",
+                  backgroundColor: "#333",
+                  borderRadius: 25,
+                }}
+              >
+                <QRCode
+                  value={url}
+                  size={300}
+                  color="black"
+                  backgroundColor="white"
+                />
+              </View>
+            </>
+          ) : (
+            <View
+              style={{
+                height: 350,
+                width: 350,
+                justifyContent: "center",
+                alignItems: "center",
+                borderWidth: 1,
+                borderColor: "#ccc",
+                backgroundColor: "#333",
+                borderRadius: 25,
+              }}
+            >
+              <Text style={styles.text2}> Generate a QR Code to display. </Text>
+            </View>
+          )}
+          <Text style={styles.text}> Scan to Pay </Text>
+          <Text style={styles.text3}> $BRIMIGS </Text>
+        </View>
+        <SolPayModal
+          hide={() => setShowPayModal(false)}
+          show={showPayModal}
+          address={address}
+          setParentUrl={setUrl}
+        />
+        <Button
+          mode="contained"
+          onPress={() => setShowPayModal(true)}
+          style={styles.button}
+        >
+          Create New QR Code
+        </Button>
+      </View>
+    </>
+  );
+}
+
+export function SolPayModal({
+  hide,
+  show,
+  address,
+  setParentUrl,
+}: {
+  hide: () => void;
+  show: boolean;
+  address: PublicKey;
+  setParentUrl: (url: string) => void;
+}) {
+  const [memo, setMemo] = useState("");
+  const [amount, setAmount] = useState("");
+
+  const handleSubmit = () => {
+    const number = BigNumber(amount);
+    const newUrl = encodeURL({
+      recipient: address,
+      amount: number,
+      memo,
+    }).toString();
+    setParentUrl(newUrl);
+    hide();
+  };
+
+  return (
+    <AppModal
+      title="Pay"
+      hide={hide}
+      show={show}
+      submit={handleSubmit}
+      submitLabel="Create QR"
+      submitDisabled={!memo || !amount}
+    >
+      <View style={{ padding: 20 }}>
+        <TextInput
+          label="Amount"
+          value={amount}
+          onChangeText={setAmount}
+          keyboardType="numeric"
+          mode="outlined"
+          style={{ marginBottom: 20, backgroundColor: "#f0f0f0" }}
+        />
+        <TextInput
+          label="Memo"
+          value={memo}
+          onChangeText={setMemo}
+          mode="outlined"
+          style={{ marginBottom: 5, backgroundColor: "#f0f0f0" }}
+        />
+      </View>
+    </AppModal>
+  );
+}
+```
+
+## Connecting User Names with Public Keys via Solana Name Service
 
 Solana Name Service _(SNS)_ enables a human-readable name to be mapped to a SOL address. By implementing SNS, we can easily prompt a user to create a user name _(which will become their SNS name behind the scenes)_ and that name will directly map to the users wallet address.
 
-## Integrating Escrow Accounts to Enable Payment Protection
+Solana Name Service has two functions that we can implement throughout this dapp to simplify a lot of the front end:
+
+- `getDomainKeySync` - a function that returns the public key associated with the provided domain name. This can be implemented anywhere there is a user input for a public key. Now the user only needs to type in a username when searching for an account, exactly as you do with cash app. This is what SNS calls a [direct lookup](https://sns.guide/domain-name/domain-direct-lookup.html).
+
+- `reverseLookup` - an asynchronous function that returns the domain name of the provided public key.This can be implemented anywhere in the UI where you want to display the username. This is what SNS calls a [reverse lookup](https://sns.guide/domain-name/domain-reverse-lookup.html)
+
+To showcase this, lets update the transfers funds function to now accept a user name as a parameter rather than a public key and integrate the SNS API.
+
+```typescript
+const transferFunds = useCallback(
+  async (program: Program<CashApp>) => {
+    let signedTransactions = await transact(
+      async (wallet: Web3MobileWallet) => {
+        const [authorizationResult, latestBlockhash] = await Promise.all([
+          authorizeSession(wallet),
+          connection.getLatestBlockhash(),
+        ]);
+
+        const { pubkey } = getDomainKeySync(userName);
+
+        const [recipientPDA] = useMemo(() => {
+          const counterSeed = pubkey.toBuffer();
+          return PublicKey.findProgramAddressSync(
+            [counterSeed],
+            cashAppProgramId
+          );
+        }, [cashAppProgramId]);
+
+        const transferInstruction = await program.methods
+          .transferFunds(pubkey, newTransferAmount)
+          .accounts({
+            user: authorizationResult.publicKey,
+            fromCashAccount: cashAppPDA,
+            toCashAccount: recipientPDA,
+          })
+          .instruction();
+
+        const transferTransaction = new Transaction({
+          ...latestBlockhash,
+          feePayer: authorizationResult.publicKey,
+        }).add(transferInstruction);
+
+        const signedTransactions = await wallet.signTransactions({
+          transactions: [transferTransaction],
+        });
+
+        return signedTransactions[0];
+      }
+    );
+
+    let txSignature = await connection.sendRawTransaction(
+      signedTransactions.serialize(),
+      {
+        skipPreflight: true,
+      }
+    );
+
+    const confirmationResult = await connection.confirmTransaction(
+      txSignature,
+      "confirmed"
+    );
+
+    if (confirmationResult.value.err) {
+      throw new Error(JSON.stringify(confirmationResult.value.err));
+    } else {
+      console.log("Transaction successfully submitted!");
+    }
+  },
+  [authorizeSession, connection, cashAppPDA]
+);
+```
+
+## Enhancing the Solana Program
+
+### Integrating multiple PDAs in one Program
