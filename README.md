@@ -85,9 +85,7 @@ pub mod cash_app {
 }
 ```
 
-### Define Your Program State
-
-To enable basic cash app functionalities for section one of this tutorial, we will want to save the following information to our cash account state:
+### Define Your Account State
 
 ```rust
 #[account]
@@ -98,7 +96,7 @@ pub struct CashAccount {
 }
 ```
 
-Since we are able to directly query the balance of the PDA account, saving the account balance to the cash account state would just add unnecesasary calculations in future instructions.
+Naturally, it would make sense to store the account balance in the state, however, we are able to directly query the balance of PDA accounts. So saving the account balance would just add unnecesasary calculations in future instructions.
 
 ### Add Instructions
 
@@ -301,7 +299,7 @@ pub struct AddFriend<'info> {
 }
 ```
 
-### Integrating multiple accounts
+### Integrating Multiple Accounts Types
 
 There are several different ways to approach requesting payments from friends. In this example, we will make each payment request its own PDA account in order to simplify querying active requests, deleting completed requests, and updating both the sender and recipent cash accounts. Since this goes beyond the basic solana program set up, we'll implement this later on in the tutorial.
 
@@ -739,7 +737,7 @@ export function AccountBalance({ address }: { address: PublicKey }) {
 }
 ```
 
-### Using The Program Object Namespaces
+### Using Namespaces
 
 Next, we need to update the buttons to deposit and withdraw funds. Go to the `AccountButtonGroup` function.
 
@@ -1420,6 +1418,4 @@ const transferFunds = useCallback(
 );
 ```
 
-## Enhancing the Solana Program
-
-### Integrating multiple PDAs in one Program
+This implementation can be integrated everywhere in the application where an input requires a public key, enabling the user experience to be identical to that of a web2 application.
