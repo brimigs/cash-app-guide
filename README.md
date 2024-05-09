@@ -1,14 +1,17 @@
 In this guide, you will learn how to create a react-native mobile app that is both android and ios compatible. This app will mimic a cash app experience but run on the solana blockchian, showcasing that web3 products can have the same user expereince as web2 products. To build this, we will need to write an anchor program with escrow functionality, integrate the solana name service sdk, and intergrate solana pay.
 
-## What you will learn
+## What You Will Learn
 
 - Setting up your environment
 - Creating a solana mobile dApp
 - Anchor program development
 - Anchor PDAs and accounts
 - Deploying a Solana program
-- Testing an on-chain program
 - Connecting an on-chain program to a mobile react-native UI
+- Solana Pay
+- Solana Name Service
+
+## What You Will Build
 
 ## Prerequisites
 
@@ -30,7 +33,7 @@ For an introduction to solana mobile development, take a look at the solana mobi
 
 - [Solana Mobile Introduction](https://docs.solanamobile.com/getting-started/intro)
 
-## Project design overview
+## Project Design Overview
 
 Let's start by quickly mapping out the entire dApp design. To create a clone of cash app, we want to have the following functionalities:
 
@@ -66,23 +69,30 @@ Follow the [Running the app](https://docs.solanamobile.com/react-native/expo#run
 
 Reminder: You must have [fake wallet](https://github.com/solana-mobile/mobile-wallet-adapter/tree/main/android/fakewallet) running on the same android emulator to be able to test out transactions, as explained in the [solana mobile development set up docs](https://docs.solanamobile.com/getting-started/development-setup).
 
-## Writing a Solana Program for Cash App Functionalities
+## Writing a Solana Program with Cash App Functionalities
 
-We'll break up the solana program code into a few sections. To start off, lets just enable account creation, deposits, withdrawals, and direct transfers of funds to create a very basic version of cash app.
+Ensure you have the [anchor CLI](https://www.anchor-lang.com/docs/cli) installed, then create an anchor directory within `cash-app-clone`. Navigate into the directory and run `anchor init cash-app` to initalize a project workspace for the anchor solana program.
 
-Ensure you have the [anchor CLI](https://www.anchor-lang.com/docs/cli) installed, then create an anchor directory within `cash-app-clone`. Navigate into the directory and run `anchor init` to initalize a project workspace for the anchor solana program. Now create a `lib.rs` file and we'll get started with the program code.
+Once the anchor workspace has been initialized, navigate to to `cash-app/programs/cash-app/src/lib.rs` to start writing the program code.
 
-### Define Your Anchor Program
+We'll break this up into a few sections. To start off, lets just enable account creation, deposits, withdrawals, and direct transfers of funds to create a very basic version of cash app. Your anchor program should already be defined by initializing the anchor work space and should look as folows:
 
 ```rust
 use anchor_lang::prelude::*;
 
-declare_id!("11111111111111111111111111111111");
+declare_id!("3dQeymKBEWf32Uzyzxm3Qyopt6uyHJdXxtvrpJdk7vCE");
 
 #[program]
 pub mod cash_app {
     use super::*;
+
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        Ok(())
+    }
 }
+
+#[derive(Accounts)]
+pub struct Initialize {}
 ```
 
 ### Define Your Account State
@@ -92,15 +102,16 @@ pub mod cash_app {
 #[derive(InitSpace)]
 pub struct CashAccount {
     pub owner: Pubkey,
+    #[max_len(100)]
     pub friends: Vec<Pubkey>,
 }
 ```
 
-Naturally, it would make sense to store the account balance in the state, however, we are able to directly query the balance of PDA accounts. So saving the account balance would just add unnecesasary calculations in future instructions.
+Since we are able to directly query the SOL balance of PDA accounts, we don't won't have to keep track of the user's account balance here. The owner is being stored to allow for validation checks within instructions, ensuring the account calling the instruction is also the owner of the `cash_account`. Friends are being stored to allow for user's to add friends within the app, similiar to cash app.
 
 ### Add Instructions
 
-Now that the state is defined, we need to create an instruction to initalize an account when a new user signs up for cash app. This will initialize a new account and save the user's public key into the PDA of the user's cash account.
+Now that the state is defined, we need to create an instruction to initalize an account when a new user signs up for cash app. This will initialize a new `cash_account` and the PDA of this account will be derived from the public key of the user's wallet.
 
 ```rust
 #[program]
@@ -109,7 +120,7 @@ pub mod cash_app {
 
     pub fn initialize_account(ctx: Context<InitializeAccount>) -> Result<()> {
         let cash_account = &mut ctx.accounts.cash_account;
-        cash_account.owner = *ctx.accounts.user.key;
+        cash_account.owner = *ctx.accounts.signer.key;
         cash_account.friends = Vec::new();
         Ok(())
     }
@@ -119,18 +130,20 @@ pub mod cash_app {
 pub struct InitializeAccount<'info> {
     #[account(
         init,
-        seeds = [b"cash-account", user.key().as_ref()],
+        seeds = [b"cash-account", signer.key().as_ref()],
         bump,
-        payer = user,
+        payer = signer,
         space = 8 + CashAccount::INIT_SPACE
     )]
     pub cash_account: Account<'info, CashAccount>,
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
 ```
+
+Because the `InitSpace` macro was used when defining the `CashAccount` state, it can be called to calculate the space that this program will take up on chain. The space is needed in order to calculate how much rent the payer will need to pay to hold the program on chain.
 
 Next we will need to add an instruction to this program that allows a user to deposit funds into their cash account:
 
@@ -145,7 +158,7 @@ pub mod cash_app {
         require!(amount > 0, ErrorCode::InvalidAmount);
 
         let ix = system_instruction::transfer(
-            &ctx.accounts.user.key(),
+            &ctx.accounts.signer.key(),
             ctx.accounts.cash_account.to_account_info().key,
             amount,
         );
@@ -153,36 +166,40 @@ pub mod cash_app {
         invoke(
             &ix,
             &[
-                ctx.accounts.user.clone(),
+                ctx.accounts.signer.clone(),
                 ctx.accounts.cash_account.to_account_info(),
             ],
         )?;
 
-        ctx.accounts.cash_account.balance = ctx
-            .accounts
-            .cash_account
-            .balance
-            .checked_add(amount)
-            .ok_or(ErrorCode::Overflow)?;
         Ok(())
     }
 }
 
 #[derive(Accounts)]
 pub struct DepositFunds<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"cash-account", signer.key().as_ref()],
+        bump,
+    )]
     pub cash_account: Account<'info, CashAccount>,
     #[account(mut)]
     /// CHECK: This account is only used to transfer SOL, not for data storage.
-    pub user: AccountInfo<'info>,
+    pub signer: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
 }
 
 ```
 
-The `deposit_funds` function constructs a system instruction to transfer SOL from the user's wallet to the user's cash account PDA. The transfer instruction is executed using `invoke`, which safely performs the cross-program invocation.
+The `deposit_funds` function constructs a system instruction to transfer SOL from the user's wallet to the user's cash account PDA. Solana programs are designed to be isolated for security reasons; they don't have direct access to each other's state or functions. If one program needs to execute functionality that is part of another program, it must do so through a cross-program invocation (CPI). Since the funds are coming from the signer's wallet, which is an account owned by the signer not the program, the function has to interact with the System Program to modify the balance of the accounts. The transfer instruction from the System Program is then executed using `invoke`, which safely performs the CPI by taking in the transfer instruction and a slice of account metas that the instruction will interact with.
 
-Next we need to add an instruction to this program that allows a user to withdraw funds from their cash account:
+`invoke` ensures that all operations are performed securely and in compliance with the rules set by the Solana network and the specific programs involved. It verifies that:
+
+- Only authorized modifications to account data are performed.
+- The necessary signatures for operations that require them are present.
+- The operation does not violate the program's constraints or Solana's network rules.
+
+Next, we need to add an instruction to this program that allows a user to withdraw funds from their cash account:
 
 ```rust
 #[program]
@@ -194,8 +211,10 @@ pub mod cash_app {
     pub fn withdraw_funds(ctx: Context<WithdrawFunds>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
 
-        let cash_account = ctx.accounts.cash_account.to_account_info();
-        let wallet = ctx.accounts.user.to_account_info();
+        let cash_account = &mut ctx.accounts.cash_account.to_account_info();
+        let wallet = &mut ctx.accounts.signer.to_account_info();
+
+        require!(*cash_account.owner == ctx.accounts.signer.key(), ErrorCode::InvalidSigner);
 
         **cash_account.try_borrow_mut_lamports()? -= amount;
         **wallet.try_borrow_mut_lamports()? += amount;
@@ -208,18 +227,37 @@ pub mod cash_app {
 pub struct WithdrawFunds<'info> {
     #[account(
         mut,
-        seeds = [b"cash-account", user.key().as_ref()],
+        seeds = [b"cash-account", signer.key().as_ref()],
         bump,
     )]
     pub cash_account: Account<'info, CashAccount>,
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
+#[error_code]
+pub enum ErrorCode {
+    #[msg("The provided amount must be greater than zero.")]
+    InvalidAmount,
+
+    #[msg("Insufficient funds to perform the transfer.")]
+    InsufficientFunds,
+
+    #[msg("Signer does not have access to call this instruction.")]
+    InvalidSigner,
+}
 ```
 
-The `withdraw_funds` instruction directly adjusts the lamports _(smallest unit of SOL)_ in the user's cash_account and the user's wallet. Since the cash_account is owned by the program, `try_borrow_mut_lamports` can be used here. A Solana Program can transfer lamports from one account to another without 'invoking' the System program. The fundamental rule is that your program can transfer lamports from any account owned by your program to any account at all. The recipient account does not have to be an account owned by your program. Since lamports can not be created or destroyed when changing account balances, any decrement performed needs to be balanced with an equal increment somewhere else, otherwise you will get an error. In the above `withdraw_funds` instruction, the program is transfering the exact same amount of lamports from the cash account into the users wallet.
+Conversly to the `deposit_funds` instruction, the `withdraw_funds` instruction directly adjusts the lamports _(the smallest unit of SOL)_ in the user's `cash_account` and the user's wallet by using `try_borrow_mut_lamports()`. This transfer of funds can be done without a CPI because the `cash_account` is owned by the same program executing the function. By directly manipulating lamports, the function avoids the overhead of setting up and executing a CPI. This can be more efficient but requires careful handling to ensure security.
+
+A Solana Program can transfer lamports from an account that is owned by the program to another without 'invoking' the System program. The sender account must be owned by the program but the recipient account does not have to be owned by the program. However, since lamports can not be created or destroyed when changing account balances, any decrement performed needs to be balanced with an equal increment somewhere else, otherwise you will get an error. In the above `withdraw_funds` instruction, the program is transfering the exact same amount of lamports from the cash account into the users wallet.
+
+Since we are directly manipulating the lamports in an account, we want to ensure that the signer of the instruction is the same as the owner of the account so that only the owner can call this instruction. This is why the following validation check was implemented: `require!(cash_account.owner = ctx.accounts.signer, ErrorCode::InvalidSigner)`.
+
+For error handling. the `#[error_code]` anchor macro is used, which generates `Error` and `type Result<T> = Result<T, Error> ` types to be used as return types from Anchor instruction handlers. Importantly, the attribute implements `From` on the `ErrorCode` to support converting from the user defined error enum into the generated `Error`
+
+### Calling an Instruction within an Instruction
 
 Now lets create an instruction for transfering funds from one user to another.
 
@@ -237,8 +275,10 @@ pub mod cash_app {
     ) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
 
-        let from_cash_account = ctx.accounts.from_cash_account.to_account_info();
-        let to_cash_account = ctx.accounts.to_cash_account.to_account_info();
+        let from_cash_account = &mut ctx.accounts.from_cash_account.to_account_info();
+        let to_cash_account = &mut ctx.accounts.to_cash_account.to_account_info();
+
+        require!(*cash_account.owner == ctx.accounts.signer.key(), ErrorCode::InvalidSigner);
 
         **from_cash_account.try_borrow_mut_lamports()? -= amount;
         **to_cash_account.try_borrow_mut_lamports()? += amount;
@@ -250,24 +290,32 @@ pub mod cash_app {
 #[derive(Accounts)]
 #[instruction(recipient: Pubkey)]
 pub struct TransferFunds<'info> {
-    #[account(mut, seeds = [user.key().as_ref()], bump)]
+    #[account(
+        mut,
+        seeds = [b"cash-account", signer.key().as_ref()],
+        bump,
+    )]
     pub from_cash_account: Account<'info, CashAccount>,
-    #[account(mut, seeds = [recipient.key().as_ref()], bump)]
+    #[account(
+        mut,
+        seeds = [b"cash-account", recipient.key().as_ref()],
+        bump,
+    )]
     pub to_cash_account: Account<'info, CashAccount>,
     pub system_program: Program<'info, System>,
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
 }
 ```
 
-In the above instruction, we are once again directly transferring lamports between accounts. The difference here is that the Context data structure `TransferFunds` consists of an additonal account.
+In the above instruction, the `TransferFunds` Context data structure consists of an additonal account. The Context is a macro-generated struct that includes references to all the accounts needed for the operation. Since we need information from both the sender and recipient accounts for this instruction, we need to include both accounts in the Context.
 
-Since the seeds for the cash account PDAs are created from the public key of the cash account owner, the instruction needs to take the recipient's publickey as a parameter and pass that to the `TransferFunds` Context data structure. Then the cash_account pda can be derived for both the `from_cash_account` and the `to_cash_account`.
+We are once again directly transferring lamports between accounts, since the program owns the `cash_account` account. Since the seeds for the cash account PDAs are created from the public key of the cash account owner, the instruction needs to take the recipient's public key as a parameter and pass that to the `TransferFunds` Context data structure. Then the `cash_account` PDA can be derived for both the `from_cash_account` and the `to_cash_account`.
 
-Because both of the accounts are listed in the `#[derive(Accounts)]` macro, they are deserialized and validated so you can simply call both of the accounts with the Context `ctx` to get the account info and them update the account balances from there.
+Since both of the accounts are listed in the `#[derive(Accounts)]` macro, they are deserialized and validated so you can simply call both of the accounts with the Context `ctx` to get the account info and them update the account balances from there.
 
 To be able to send funds to another user, similar to Cash App, both users must have created an account. This is because we are sending funds to the user's `cash_account` PDA, not the user's wallet. So each user needs to initialze a cash account by calling the `initialize_account` instruction to create their unique PDA derived from their wallet publickey. We'll need to keep this in mind when designing the UI/UX of the onboarding process for this dApp later on to ensure every user calls the `initialize_account` instruction when signing up for an account.
 
-Now the basic payment functionality is enabled, we want to be able to interact with friends. So we need to add instructions for adding friends, requesting payments from friends, and accepting/rejecting payment requests.
+Now that the basic payment functionality is enabled, we want to be able to interact with friends. So we need to add instructions for adding friends, requesting payments from friends, and accepting/rejecting payment requests.
 
 Adding a friend is as simple as just pushing a new publickey to the `friends` vector in the `CashAccount` state.
 
@@ -288,18 +336,18 @@ pub mod cash_app {
 pub struct AddFriend<'info> {
     #[account(
         mut,
-        seeds = [user.key().as_ref()],
+        seeds = [b"cash-account", signer.key().as_ref()],
         bump,
     )]
     pub cash_account: Account<'info, CashAccount>,
     #[account(mut)]
     /// CHECK: This account is only used to transfer SOL, not for data storage.
-    pub user: AccountInfo<'info>,
+    pub signer: AccountInfo<'info>,
     pub system_program: Program<'info, System>,
 }
 ```
 
-### Integrating Multiple Accounts Types
+### Multiple Accounts Types in One Program
 
 There are several different ways to approach requesting payments from friends. In this example, we will make each payment request its own PDA account in order to simplify querying active requests, deleting completed requests, and updating both the sender and recipent cash accounts. Since this goes beyond the basic solana program set up, we'll implement this later on in the tutorial.
 
@@ -317,17 +365,17 @@ pub struct PendingRequest {
 }
 
 #[derive(Accounts)]
-pub struct InitializeAccount<'info> {
+pub struct InitializeRequest<'info> {
     #[account(
         init,
-        seeds = [b"pending-request", user.key().as_ref()],
+        seeds = [b"pending-request", signer.key().as_ref()],
         bump,
-        payer = user,
+        payer = signer,
         space = 8 + PendingRequest::INIT_SPACE
     )]
     pub pending_request: Account<'info, PendingRequest>,
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -337,10 +385,10 @@ pub mod cash_app {
 
     ...
 
-    pub fn new_pending_request(ctx: Context<InitializeAccount>, recipient: Pubkey, amount: u64) -> Result<()> {
+    pub fn new_pending_request(ctx: Context<InitializeRequest>, sender: Pubkey, amount: u64) -> Result<()> {
         let pending_request = &mut ctx.accounts.pending_request;
-        pending_request.sender = *ctx.accounts.user.key;
-        pending_request.recipient = recipient;
+        pending_request.recipient = *ctx.accounts.signer.key;
+        pending_request.sender = sender;
         pending_request.amount = amount;
         Ok(())
     }
@@ -358,7 +406,10 @@ pub mod cash_app {
 
     pub fn accept_request(ctx: Context<ProcessRequest>) -> Result<()> {
         let recipient = ctx.accounts.pending_request.recipient;
+        let sender = ctx.accounts.pending_request.sender;
         let amount = ctx.accounts.pending_request.amount;
+
+        require!(sender == ctx.accounts.signer.key(), ErrorCode::InvalidSigner);
 
         transfer_funds(ctx, recipient, amount)
 
@@ -374,22 +425,119 @@ pub mod cash_app {
 pub struct ProcessRequest<'info> {
     #[account(
         mut,
-        seeds = [b"pending-request", user.key().as_ref()],
+        seeds = [b"pending-request", signer.key().as_ref()],
         bump,
-        close = user,
+        close = signer,
     )]
     pub pending_request: Account<'info, PendingRequest>,
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 ```
 
 In the above code, all we need to do to decline a request is to close the account on chain, by specifying the `close` constraint in the account macro for the `DeclineRequest` data structure, the account simply closes when the correct signer signs the `decline_request` instruction.
 
-For `pending_requests`, we also want the account to close upon completion of the instruction but the requested funds need to be transfered first. We can just get the needed information from the account state and call the `trasnsfer_funds` function we defined earlier.
+For `accept_request`, we also want the account to close upon completion of the instruction but the requested funds need to be transfered first. We can just get the needed information from the account state and call the `trasnsfer_funds` function we defined earlier. Before calling this functions, we added in a check to validate that the signer is the same account as the srequested sender.
 
 We're now able to deposit funds, withdraw funds, send funds to another user, request funds from another user, add friends, and accept/decline requests, which covers all of the functionaltiy in cash app.
+
+### Integrating a Counter for Unique PDAs
+
+Since a user can have multiple pending requests, we want each request to have a unique PDA. So we can update the above code to include a counter in the PDA. The counter will need to be tracked in the user's cash account state, so now `ProcessRequest` needs to take in the cash account along with the pending request account. So lets first update both account data structures.
+
+```rust
+#[account]
+#[derive(InitSpace)]
+pub struct CashAccount {
+    pub signer: Pubkey,
+    pub friends: Vec<Pubkey>,
+    pub pending_request_counter: u32,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct PendingRequest {
+    pub sender: Pubkey,
+    pub recipient: Pubkey,
+    pub amount: u64,
+    pub pending_request_count: u32,
+}
+```
+
+Now we need to update the `ProcessRequest` context data structure to include the requester's cash account so that the counter can be queried and incremented and the pending request account can use the value of the counter in its PDA.
+
+```rust
+#[derive(Accounts)]
+pub struct InitializeRequest<'info> {
+    #[account(
+        init,
+        seeds = [b"pending-request", signer.key().as_ref(), cash_account.pending_request_count.to_le_bytes()],
+        bump,
+        payer = signer,
+        space = 8 + PendingRequest::INIT_SPACE
+    )]
+    pub pending_request: Account<'info, PendingRequest>,
+    #[account(
+        mut,
+        seeds = [b"cash-account", signer.key().as_ref()],
+        bump,
+        close = signer,
+    )]
+    pub cash_account: Account<'info, CashAccount>,
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(count: u32)]
+pub struct ProcessRequest<'info> {
+    #[account(
+        mut,
+        seeds = [b"pending-request", recipient.key().as_ref(), count.to_le_bytes()],
+        bump,
+        close = signer,
+    )]
+    pub pending_request: Account<'info, PendingRequest>,
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+```
+
+Lastly, we need to update the initalization of each account. The `pending_request_counter` should start at 0 and increment with each new request sent from that specific cash account. The `pending_request_counter` will be the current value of the `pending_request_counter` + 1.
+
+```rust
+#[program]
+pub mod cash_app {
+    use super::*;
+
+    ...
+
+    pub fn initialize_account(ctx: Context<InitializeAccount>) -> Result<()> {
+        let cash_account = &mut ctx.accounts.cash_account;
+        cash_account.signer = *ctx.accounts.signer.key;
+        cash_account.friends = Vec::new();
+        cash_account.pending_request_counter = 0;
+        Ok(())
+    }
+
+    pub fn new_pending_request(ctx: Context<InitializeAccount>, recipient: Pubkey, amount: u64) -> Result<()> {
+        let cash_account = &mut ctx.accounts.cash_account;
+        let pending_request = &mut ctx.accounts.pending_request;
+        pending_request.sender = *ctx.accounts.signer.key;
+        pending_request.recipient = recipient;
+        pending_request.amount = amount;
+        pending_request.pending_request_count = cash_account.pending_request_counter;
+        cash_account.pending_request_counter += 1;
+        Ok(())
+    }
+}
+```
+
+Now your solana program should match the final version here:
+// FIX ME: Add link to github code
 
 ### Additional Solana Program Development Information
 
@@ -448,8 +596,8 @@ export function UseCashAppProgram(user: PublicKey) {
   );
 
   const [cashAppPDA] = useMemo(() => {
-    const counterSeed = user.toBuffer();
-    return PublicKey.findProgramAddressSync([counterSeed], cashAppProgramId);
+    const accountSeed = [Buffer.from("cash_account"), user.toBuffer()];
+    return PublicKey.findProgramAddressSync([accountSeed], cashAppProgramId);
   }, [cashAppProgramId]);
 
   const cashAppProgram = useMemo(() => {
@@ -473,7 +621,9 @@ export function UseCashAppProgram(user: PublicKey) {
 }
 ```
 
-Since this funciton takes in the public key of the connected wallet and we designed the cash app pda to be generated based on the user's public key, we can easily calculate what the public key of the cash app PDA for each individual user is.
+Since there is only one `cash_account` account per public key, it is easy to calculate the `cashAccountPDA` by taking in the user's public key as a parameter and using that to calculate what the public key of the cash app PDA for each individual user is.
+
+To be able to get information for all the `pending_request` accounts associated with a specifc public key, we'll need a little more information. So we'll create another function that takes in the count and the
 
 Since the IDL is generated as a JSON file when building the program, we can just import it to this file.
 
