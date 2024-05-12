@@ -472,7 +472,7 @@ Now we need to update the `ProcessRequest` context data structure to include the
 pub struct InitializeRequest<'info> {
     #[account(
         init,
-        seeds = [b"pending-request", signer.key().as_ref(), cash_account.pending_request_count.to_le_bytes()],
+        seeds = [b"pending-request", signer.key().as_ref(), &cash_account.pending_request_counter.to_le_bytes()],
         bump,
         payer = signer,
         space = 8 + PendingRequest::INIT_SPACE
@@ -495,7 +495,7 @@ pub struct InitializeRequest<'info> {
 pub struct ProcessRequest<'info> {
     #[account(
         mut,
-        seeds = [b"pending-request", recipient.key().as_ref(), count.to_le_bytes()],
+        seeds = [b"pending-request", pending_request.recipient.key().as_ref(), &count.to_le_bytes()],
         bump,
         close = signer,
     )]
@@ -543,11 +543,131 @@ Now your solana program should match the final version here:
 
 If there is any confusion on the above anchor macros, structs, or functions defined, please refer to the [Basic CRUD dApp on Solana Guide](https://github.com/solana-foundation/developer-content/blob/main/content/guides/dapps/journal.md#writing-a-solana-program-with-anchor) for a guide with a more granular explaination.
 
-Creating tests is out of scope for this guide, however, it is important to prioritize testing when developing a solana program. For information on testing with anchor, read these docs:
-
-// FIXME: Do we have solana docs on anchor testing?? I thought we did but cant find them.
-
 For more in-depth understanding of the anchor framework, review [The Anchor Book](https://book.anchor-lang.com/).
+
+### Build and Deploy an Anchor Program
+
+First, we need to deploy the anchor program. For testing purposes, you can either deploy to your localnet or to devnet. Devnet is beneficial when you wish to share with others, since everyone has access the the devnet rpc endpoint. On the other hand, localnet enables for faster iteration, unlimited airdrops, and network customizatioln. However, localnet is ran locally on your computer with `solana-test-validator` so your program ID will not be compatible with anyone who is not using your computer's localhost. To use anchor test later in this guide, you must have a localnet deployment of your solana program.
+
+Navigate to `cash-app-clone/cash-app` in your terminal.
+
+```shell
+anchor build
+```
+
+This command builds your program's workspace. It targets Solana's BPF runtime and emits each program's IDL in the `target/idl` folder and the corresponding typescript types in the `target/types` folder. If your program is doesn't build, then there is an error in your code that needs to be addressed.
+
+```shell
+anchor deploy --provider.cluster localnet
+```
+
+This command deploys your program to the specified cluster and generates a program ID publickey. If you choose to deploy to localnet, you must be running `solana-test-validator` to be able to deploy.
+
+```shell
+anchor keys sync
+```
+
+This command syncs the program's `declare_id!` pubkey with the program's actual pubkey. It specifically updates the `lib.rs` and `Anchor.toml` files.
+
+### Testing an Anchor Program
+
+Testing Solana Anchor programs involves simulating the behavior of the smart contracts and ensuring they operate as expected. For the below test, we will cover the following:
+
+- Create Accounts for User A and User B
+- Deposit funds into User A's account
+- Withdraw funds from User A's account
+- Transfer funds from User A's account to User B's account
+- User A adds User B as a friend
+- User A requests funds from User B
+- User B accepts the request
+- User A requests funds again from User B
+- User B declines the request
+
+When initializing an anchor workspace, a file for typescript tests is generated. Naviagte to `cash-app-clone/cash-app/tests/cash-app.ts` to find the testing template, which will already have the required modules inported.
+
+First we need to set up our environment to interact with the Solana blockchain.
+
+```typescript
+describe("cash-app", () => {
+  const provider = anchor.AnchorProvider.env();
+  const program = anchor.workspace.CashApp as Program<CashApp>;
+});
+```
+
+The `provider` variable will now be able to faciliate interactions between your application (client-side) and the Solana blockchain, which includes a wallet that holds the keypair used to sign transactions.
+
+The `program` variable now represents your Anchor program and can be used to call functions defined in your smart contract, pass in required accounts, and handle the program's data. It simplifies interacting with the Solana blockchain by abstracting many of the lower-level details.
+
+Next, we need to define the accounts that will be interacting with the solana program as well as their `cash_account` PDAs. `myWallet` is the provider's wallet, meaning that it is already integrated with the `AnchorProvider` and is configured when the `provider` is initialized. Since `yourWallet` is a new wallet being generated, it will also need to be funded with SOL by having the wallet request an airdrop.
+
+```typescript
+it("A to B user flow", async () => {
+  const myWallet = provider.wallet as anchor.Wallet;
+  const yourWallet = new anchor.web3.Keypair();
+
+  const [myAccount] = await anchor.web3.PublicKey.findProgramAddress(
+    [Buffer.from("cash-account"), myWallet.publicKey.toBuffer()],
+    program.programId
+  );
+
+  const [yourAccount] = await anchor.web3.PublicKey.findProgramAddress(
+    [Buffer.from("cash-account"), yourWallet.publicKey.toBuffer()],
+    program.programId
+  );
+
+  console.log("requesting airdrop");
+  const airdropTx = await provider.connection.requestAirdrop(
+    yourWallet.publicKey,
+    5 * anchor.web3.LAMPORTS_PER_SOL
+  );
+  await provider.connection.confirmTransaction(airdropTx);
+
+  let yourBalanceBefore = await program.provider.connection.getBalance(
+    yourWallet.publicKey
+  );
+  console.log("Your wallet balance:", yourBalanceBefore);
+});
+```
+
+Now we can interact with the solana program. First we need to initialize each user's `cash_account`.
+
+```typescript
+const initMe = await program.methods
+  .initializeAccount()
+  .accounts({
+    cashAccount: myAccount,
+    signer: myWallet.publicKey,
+    systemProgram: anchor.web3.SystemProgram.programId,
+  })
+  .rpc();
+console.log(`Use 'solana confirm -v ${initMe}' to see the logs`);
+
+await anchor.getProvider().connection.confirmTransaction(initMe);
+
+const initYou = await program.methods
+  .initializeAccount()
+  .accounts({
+    cashAccount: yourAccount,
+    signer: yourWallet.publicKey,
+    systemProgram: anchor.web3.SystemProgram.programId,
+  })
+  .signers([yourWallet])
+  .rpc();
+console.log(`Initialized your account : ${initYou}' `);
+
+await anchor.getProvider().connection.confirmTransaction(initYou);
+```
+
+By calling the program namespace `program.methods`, you are able to interact with the instructions of that program. When a transaction is sent using the `provider` _(or methods derived from it, such as `program.rpc()`)_, the signing by `myWallet` is implicitly handled. The `provider` automatically includes the wallet configured with it _(myWallet in this case)_ as a signer for any transactions it sends. This means you do not need to manually specify `myWallet` in the `.signers()` array when constructing a transaction, because it's inherently assumed to be a signer through the provider's configuration. However, `youWallet` is a new keypair which is not automatically associated with the `provider`, so must explicitly tell Anchor to use yourWallet for signing any transaction where it's required.
+
+Since any other instrcution call is handled exaclty as described above, you can complete this test example independently. To review your work, you can see the completed test file here.
+// FIXME: Add github link to anchor tests
+
+Lastly, run your test suite against your localnet.
+
+```shell
+anchor test
+```
 
 ## Connecting a Solana Program to a React-Native Expo App
 
@@ -575,15 +695,7 @@ Install the build on your android emmulator and keep it running in a seperate wi
 
 ### Initial Program Connection
 
-First, we need to deploy the anchor program. For testing purposes, you can either deploy to your localnet or to devnet. Devnet is beneficial when you wish to share with others, since everyone has access the the devnet rpc endpoint. On the other hand, localnet enables for faster iteration, unlimited airdrops, and network customizatioln. However, localnet is ran locally on your computer with `solana-test-validator` so your program ID will not be compatible with anyone who is not using your computer's localhost. Since I want this dApp to be working on devnet for anyone to be able to try out, I'll be using devnet throughout this guide.
-
-1. Run `anchor build` to build your program's workspace. This targets Solana's BPF runtime and emits each program's IDL in the `target/idl` directory.
-2. Run `anchor deploy --provider.cluster devnet` to deploy your program in the workspace to the specified cluster and generate a program ID. If you do choose to deploy to localnet, you must be running `solana-test-validator` to be able to deploy.
-3. Run `anchor keys sync` to sync the program's `declare_id!` pubkey with the program's actual pubkey
-
-Now that we have the program ID and program's IDL, we can start to connect to the front end.
-
-We can create a custom hook that accepts the public key of the user as a parameter that is designed to interact with a solana program. By providing the program ID, the rpc endpoint that the program was deployed to, the IDL of the program, and the PDA of a specified user, we can create the logic required to manager interaction with the solana program on the specified network. Create a new file under `utils/useCashAppProgram.tsx`, to implement this function.
+We can create a custom hook that accepts the public key of the user as a parameter that is designed to interact with our deployed solana program. By providing the program ID, the rpc endpoint that the program was deployed to, the IDL of the program, and the PDA of a specified user, we can create the logic required to manage interactions with the solana program. Create a new file under `utils/useCashAppProgram.tsx`, to implement this function.
 
 ```typescript
 export function UseCashAppProgram(user: PublicKey) {
