@@ -1386,6 +1386,80 @@ export function AccountButtonGroup({ address }: { address: PublicKey }) {
 
 That wraps up all the functionality we need on the home screen for a cash app clone. Now we can move onto the pay screen, which involves transfering funds from one user to another.
 
+#### Pay Component
+
+For the pay page, we'll need to call the `transferFunds` function from the cash app solana program. To do this, we'll be using the same process that was described for `depositFunds`. However, the `TransferFunds` struct described in the CashApp Solana Program requires 2 `cash_account` accounts rather than the one account that is required for `depositFunds`. So what needs to change is simply to add calculations of the PDAs of both the sender account and the recipient's account, as shown below:
+
+```typescript
+const [recipientPDA] = useMemo(() => {
+  const recipientSeed = [Buffer.from("cash-account"), recipient.toBuffer()];
+  return PublicKey.findProgramAddressSync([recipientSeed], cashAppProgramId);
+}, [cashAppProgramId]);
+
+const transferInstruction = await program.methods
+  .transferFunds(pubkey, newTransferAmount)
+  .accounts({
+    user: authorizationResult.publicKey,
+    fromCashAccount: cashAppPDA,
+    toCashAccount: recipientPDA,
+  })
+  .instruction();
+```
+
+In order to calculate the recipient's PDA, the public key of the recipient must be passed through as a parameter of the `transferFunds` function, along with the amount to transfer and the public key of the signer.
+
+#### Request Component
+
+For the request page, we'll need to call the `newRequest` function from the cash app solana program. This function also requires multple accounts. Here you'll need the `pending_request` account and the `cash_account` of the signer.
+
+```typescript
+const [pendingRequestPDA] = useMemo(() => {
+  const pendingRequestSeed = [
+    Buffer.from("pending-request"),
+    requester.toBuffer(),
+  ];
+  return PublicKey.findProgramAddressSync(
+    [pendingRequestSeed],
+    cashAppProgramId
+  );
+}, [cashAppProgramId]);
+
+const requestInstruction = await program.methods
+  .newPendingRequest(pubkey, requestAmount)
+  .accounts({
+    user: authorizationResult.publicKey,
+    pendingRequest: pendingRequestPDA,
+    cashAccount: cashAppPDA,
+  })
+  .instruction();
+```
+
+#### Accept and Decline Request Components
+
+A user will interact with their pending payment requests on the activity page.
+
+```typescript
+const acceptInstruction = await program.methods
+  .acceptRequest()
+  .accounts({
+    user: authorizationResult.publicKey,
+    pendingRequest: pendingRequestPDA,
+    toCashAccount: recipientPDA,
+    fromCashAccount: cashAppPDA,
+  })
+  .instruction();
+
+const declineInstruction = await program.methods
+  .declineRequest()
+  .accounts({
+    user: authorizationResult.publicKey,
+    pendingRequest: pendingRequestPDA,
+  })
+  .instruction();
+```
+
+### Creating Screens
+
 #### Payment Screen
 
 In cash app, the payment screen is simply a key pad with `request` and `pay` buttons that take the user input value and redirects you to another screen.
@@ -1540,47 +1614,164 @@ const App: React.FC<Props> = ({ navigation }) => {
 };
 ```
 
-#### Pay Button
+In the above code, the `Request` and `Pay` buttons redirect you to new pages to complete your transaction, similar to the cash app UX.
 
-For the pay page, we'll need to call the `transferFunds` function from the cash app solana program. To do this, we'll be using the same process that was described for `depositFunds`. However, the `TransferFunds` struct described in the CashApp Solana Program requires 2 `cash_account` accounts rather than the one account that is required for `depositFunds`. So what needs to change is simply to add calculations of the PDAs of both the sender account and the recipient's account, as shown below:
+#### Request and Pay Screens
 
-```typescript
-const [recipientPDA] = useMemo(() => {
-  const recipientSeed = [Buffer.from("cash-account"), recipient.toBuffer()];
-  return PublicKey.findProgramAddressSync([recipientSeed], cashAppProgramId);
-}, [cashAppProgramId]);
-
-const transferInstruction = await program.methods
-  .transferFunds(pubkey, newTransferAmount)
-  .accounts({
-    user: authorizationResult.publicKey,
-    fromCashAccount: cashAppPDA,
-    toCashAccount: recipientPDA,
-  })
-  .instruction();
-```
-
-In order to calculate the recipient's PDA, the public key of the recipient must be passed through as a parameter of the `transferFunds` function, along with the amount to transfer and the public key of the signer.
-
-#### Request Button
-
-For the request page, we'll need to call the `newRequest` function from the cash app solana program. This function also requires multple accounts. Here you'll need the `pending_request` account and the `cash_account` of the signer.
+The `Request` and `Pay` Screens need to take in your input value from the previous Payment screen and use it to execute the `trasnferFunds` and `newPaymentRequest` instructions.
 
 ```typescript
-const [pendingRequest] = useMemo(() => {
-  const pendingRequestSeed = [Buffer.from("pending-request"), .toBuffer()];
-  return PublicKey.findProgramAddressSync([pendingRequestSeed], cashAppProgramId);
-}, [cashAppProgramId]);
+const PayScreen: React.FC<Props> = ({ route, navigation }) => {
+  const [reason, setReason] = useState("");
+  const { inputValue } = route.params;
+  const [genInProgress, setGenInProgress] = useState(false);
+  const [userName, setUserName] = useState("");
+  const newAmount = new anchor.BN(inputValue);
 
-const transferInstruction = await program.methods
-  .transferFunds(pubkey, newTransferAmount)
-  .accounts({
-    user: authorizationResult.publicKey,
-    pendingRequest: recipientPDA,
-    cashAccount: cashAppPDA,
-  })
-  .instruction();
+  const [connection] = useState(
+    () => new Connection("https://api.devnet.solana.com")
+  );
+  const { authorizeSession, selectedAccount } = useAuthorization();
+  const user = selectedAccount.publicKey;
+  const { cashAppProgram, cashAppPDA } = UseCashAppProgram(user);
+
+  const transferFunds = useCallback(
+    async (program: Program<CashApp>) => {
+      let signedTransactions = await transact(
+        async (wallet: Web3MobileWallet) => {
+          const [authorizationResult, latestBlockhash] = await Promise.all([
+            authorizeSession(wallet),
+            connection.getLatestBlockhash(),
+          ]);
+
+          const { pubkey } = getDomainKeySync(userName);
+          console.log(pubkey);
+          console.log(newAmount);
+          // Generate the increment ix from the Anchor program
+          const transferInstruction = await program.methods
+            .transferFunds(pubkey, newAmount)
+            .accounts({
+              user: authorizationResult.publicKey,
+              fromCashAccount: cashAppPDA,
+            })
+            .instruction();
+
+          const transferTransaction = new Transaction({
+            ...latestBlockhash,
+            feePayer: authorizationResult.publicKey,
+          }).add(transferInstruction);
+
+          // Sign a transaction and receive
+          const signedTransactions = await wallet.signTransactions({
+            transactions: [transferTransaction],
+          });
+
+          return signedTransactions[0];
+        }
+      );
+
+      let txSignature = await connection.sendRawTransaction(
+        signedTransactions.serialize(),
+        {
+          skipPreflight: true,
+        }
+      );
+
+      const confirmationResult = await connection.confirmTransaction(
+        txSignature,
+        "confirmed"
+      );
+
+      if (confirmationResult.value.err) {
+        throw new Error(JSON.stringify(confirmationResult.value.err));
+      } else {
+        console.log("Transaction successfully submitted!");
+      }
+    },
+    [authorizeSession, connection, cashAppPDA]
+  );
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => navigation.goBack()}>
+          <Ionicons name="close" size={30} color="white" />
+        </TouchableOpacity>
+        <Text style={styles.title}>${inputValue}</Text>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={async () => {
+            if (genInProgress) {
+              return;
+            }
+            setGenInProgress(true);
+            try {
+              if (!cashAppProgram || !selectedAccount) {
+                console.warn(
+                  "Program/wallet is not initialized yet. Try connecting a wallet first."
+                );
+                return;
+              }
+              const deposit = await transferFunds(cashAppProgram);
+
+              alertAndLog(
+                "Funds deposited into cash account ",
+                "See console for logged transaction."
+              );
+              console.log(deposit);
+            } finally {
+              setGenInProgress(false);
+            }
+          }}
+        >
+          <Text style={styles.buttonText}>Pay</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.row}>
+        <Text style={styles.label}>To:</Text>
+        <TextInput
+          style={styles.input}
+          onChangeText={setUserName}
+          value={userName}
+          placeholder="User"
+          placeholderTextColor="#999"
+        />
+      </View>
+      <View style={styles.row}>
+        <Text style={styles.label}>For:</Text>
+        <TextInput
+          style={styles.input}
+          onChangeText={setReason}
+          value={reason}
+          placeholder="Memo"
+          placeholderTextColor="#999"
+        />
+      </View>
+      <View style={styles.rowRight}>
+        <Text style={styles.regular}>Enable purchase protection:</Text>
+        <Switch
+          value={purchaseProtection}
+          onValueChange={setPurchaseProtection}
+          trackColor={{ false: "#767577", true: "#7F5AF0" }}
+          thumbColor={purchaseProtection ? "#7F5AF0" : "#f4f3f4"}
+        />
+      </View>
+    </View>
+  );
+};
+
+export default PayScreen;
 ```
+
+For the RequestScreen, you'll follow the same process except you will use the `newPaymentRequest` instruction instead of the `transferFunds` instruciton.
+
+Try this out, then check your work here:
+
+// FIXME: Add github link
+
+#### Activity Screen
+
+The Activity Screen will allow you to add friends, see pending payment requests, accept requests, and decline requests.
 
 ## Enabling QR Code functionality with Solana Pay
 
