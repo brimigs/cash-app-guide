@@ -523,7 +523,7 @@ Now we need to update the `InitializeRequest`, `DeclineRequest`, and `AcceptRequ
 pub struct InitializeRequest<'info> {
     #[account(
         init,
-        seeds = [b"pending-request", signer.key().as_ref(), &cash_account.pending_request_counter.to_le_bytes()],
+        seeds = [b"pending-request", signer.key().as_ref(), cash_account.pending_request_counter.to_le_bytes().as_ref()],
         bump,
         payer = signer,
         space = 8 + PendingRequest::INIT_SPACE
@@ -613,7 +613,7 @@ pub mod cash_app {
 ```
 
 Now your solana program should match the final version here:
-// FIX ME: Add link to github code in program examples
+/// FIX ME: Add link to github code in program examples
 
 ### Additional Solana Program Development Information
 
@@ -749,7 +749,7 @@ By calling the program namespace `program.methods`, you're able to interact with
 
 Since any other instrcution call is handled exaclty as described above, you can complete this test example independently. To review your work, you can see the completed test file here.
 
-// FIXME: Add github link to anchor tests from program examples
+/// FIXME: Add github link to anchor tests from program examples
 
 Lastly, run your test suite against your localnet.
 
@@ -903,7 +903,7 @@ const styles = StyleSheet.create({
     height: 80,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#333", // Darker button background
+    backgroundColor: "#333",
     borderRadius: 40,
   },
   buttonGroup: {
@@ -937,13 +937,13 @@ const styles = StyleSheet.create({
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
-      height: -2, // Negative value to lift the shadow up
+      height: -2,
     },
     shadowOpacity: 0.8,
     shadowRadius: 4,
     elevation: 5,
-    width: "100%", // Ensure the modal occupies full width
-    height: "40%", // Only take up half the screen height
+    width: "100%",
+    height: "40%",
   },
   cardTitle: {
     fontSize: 20,
@@ -1480,12 +1480,10 @@ const App: React.FC<Props> = ({ navigation }) => {
   const [inputValue, setInputValue] = useState("");
   const [modalVisible, setModalVisible] = useState(false);
 
-  // Function to handle input from keypad
   const handleInput = (value: string) => {
     setInputValue(inputValue + value);
   };
 
-  // Function to handle backspace
   const handleBackspace = () => {
     setInputValue(inputValue.slice(0, -1));
   };
@@ -1494,7 +1492,6 @@ const App: React.FC<Props> = ({ navigation }) => {
     number: string;
   };
 
-  // Create a single button for the keypad
   const NumberButton: React.FC<NumberButtonProps> = ({ number }) => (
     <TouchableOpacity style={styles.button} onPress={() => handleInput(number)}>
       <Text style={styles.buttonText}>{number}</Text>
@@ -1647,7 +1644,7 @@ const PayScreen: React.FC<Props> = ({ route, navigation }) => {
           const { pubkey } = getDomainKeySync(userName);
           console.log(pubkey);
           console.log(newAmount);
-          // Generate the increment ix from the Anchor program
+
           const transferInstruction = await program.methods
             .transferFunds(pubkey, newAmount)
             .accounts({
@@ -1661,7 +1658,6 @@ const PayScreen: React.FC<Props> = ({ route, navigation }) => {
             feePayer: authorizationResult.publicKey,
           }).add(transferInstruction);
 
-          // Sign a transaction and receive
           const signedTransactions = await wallet.signTransactions({
             transactions: [transferTransaction],
           });
@@ -1767,11 +1763,152 @@ For the RequestScreen, you'll follow the same process except you will use the `n
 
 Try this out, then check your work here:
 
-// FIXME: Add github link
+/// FIXME: Add github link
 
 #### Activity Screen
 
 The Activity Screen will allow you to add friends, see pending payment requests, accept requests, and decline requests.
+
+For the Add Friend Feature, you'll want a text box for a user to input the pubkey of the friend they want to add and a button that calls the add friend instruction.
+
+```typescript
+export function AddFriend({ address }: { address: PublicKey }) {
+  const [pubkey, setPubkey] = useState("");
+  const [signingInProgress, setSigningInProgress] = useState(false);
+  const [connection] = useState(
+    () => new Connection("https://api.devnet.solana.com")
+  );
+  const { authorizeSession, selectedAccount } = useAuthorization();
+  const { cashAppProgram, cashAppPDA, friends } = UseCashAppProgram(address);
+  const user = friends.data?.balance;
+
+  const addFriend = useCallback(
+    async (program: Program<CashApp>) => {
+      let signedTransactions = await transact(
+        async (wallet: Web3MobileWallet) => {
+          const [authorizationResult, latestBlockhash] = await Promise.all([
+            authorizeSession(wallet),
+            connection.getLatestBlockhash(),
+          ]);
+
+          const addFriendIX = await program.methods
+            .addFriend(pubkey)
+            .accounts({
+              user: authorizationResult.publicKey,
+              cashAccount: cashAppPDA,
+            })
+            .instruction();
+
+          const addFriendTX = new Transaction({
+            ...latestBlockhash,
+            feePayer: authorizationResult.publicKey,
+          }).add(addFriendIX);
+
+          const signedTransactions = await wallet.signTransactions({
+            transactions: [addFriendTX],
+          });
+
+          return signedTransactions[0];
+        }
+      );
+
+      let txSignature = await connection.sendRawTransaction(
+        signedTransactions.serialize(),
+        {
+          skipPreflight: true,
+        }
+      );
+
+      const confirmationResult = await connection.confirmTransaction(
+        txSignature,
+        "confirmed"
+      );
+
+      if (confirmationResult.value.err) {
+        throw new Error(JSON.stringify(confirmationResult.value.err));
+      } else {
+        console.log("Transaction successfully submitted!");
+      }
+    },
+    [authorizeSession, connection, cashAppPDA]
+  );
+
+  return (
+    <View
+      style={{
+        padding: 5,
+        justifyContent: "center",
+        alignItems: "flex-start",
+      }}
+    >
+      <Text
+        variant="titleMedium"
+        style={{
+          color: "white",
+          marginBottom: 10,
+        }}
+      >
+        {" "}
+        Add New Friend:
+      </Text>
+      <View
+        style={{
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <TextInput
+          value={pubkey}
+          onChangeText={setPubkey}
+          style={{
+            marginBottom: 10,
+            marginTop: 10,
+            backgroundColor: "#f0f0f0",
+            height: 40,
+            padding: 10,
+            fontSize: 18,
+            width: "60%",
+            marginLeft: 20,
+            marginRight: 20,
+          }}
+        />
+        <Button
+          mode="contained"
+          disabled={signingInProgress}
+          onPress={async () => {
+            if (signingInProgress) {
+              return;
+            }
+            setSigningInProgress(true);
+            try {
+              const signedTransaction = await addFriend(cashAppProgram);
+              alertAndLog(
+                "Transaction signed",
+                "View recent transactions for more information."
+              );
+              console.log(signedTransaction);
+            } catch (err: any) {
+              alertAndLog(
+                "Error during signing",
+                err instanceof Error ? err.message : err
+              );
+            } finally {
+              setSigningInProgress(false);
+            }
+          }}
+        >
+          Add
+        </Button>
+      </View>
+    </View>
+  );
+}
+```
+
+To accept and decline requests, you'll follow a very similar method. Try this out yourself and then check the code here to review your work:
+
+///FIXME: Add github link
 
 ## Enabling QR Code functionality with Solana Pay
 
