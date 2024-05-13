@@ -385,7 +385,7 @@ pub mod cash_app {
 
     ...
 
-    pub fn new_pending_request(ctx: Context<InitializeRequest>, sender: Pubkey, amount: u64) -> Result<()> {
+    pub fn new_request(ctx: Context<InitializeRequest>, sender: Pubkey, amount: u64) -> Result<()> {
         let pending_request = &mut ctx.accounts.pending_request;
         pending_request.recipient = *ctx.accounts.signer.key;
         pending_request.sender = sender;
@@ -523,7 +523,7 @@ pub mod cash_app {
         Ok(())
     }
 
-    pub fn new_pending_request(ctx: Context<InitializeAccount>, recipient: Pubkey, amount: u64) -> Result<()> {
+    pub fn new_request(ctx: Context<InitializeAccount>, recipient: Pubkey, amount: u64) -> Result<()> {
         let cash_account = &mut ctx.accounts.cash_account;
         let pending_request = &mut ctx.accounts.pending_request;
         pending_request.sender = *ctx.accounts.signer.key;
@@ -547,15 +547,26 @@ For more in-depth understanding of the anchor framework, review [The Anchor Book
 
 ### Build and Deploy an Anchor Program
 
-First, we need to deploy the anchor program. For testing purposes, you can either deploy to your localnet or to devnet. Devnet is beneficial when you wish to share with others, since everyone has access the the devnet rpc endpoint. On the other hand, localnet enables for faster iteration, unlimited airdrops, and network customizatioln. However, localnet is ran locally on your computer with `solana-test-validator` so your program ID will not be compatible with anyone who is not using your computer's localhost. To use anchor test later in this guide, you must have a localnet deployment of your solana program.
+First, we need to deploy the anchor program. For testing purposes, you can either deploy to your localnet or to devnet.
+
+- `Devnet` is a public test network provided by Solana that more closely resembles mainnet. It operates with a broader set of validators and easily enables testing CPIs, oracles, and wallet services.
+- `Localnet` is a private instance of the Solana blockchain running locally on your machine. It enables more control of the environment but doesn't completely mimic real-world conditions of the blockchain.
+
+In the next section of this guide, you will need your program deployed to localnet to run your anchor test suite, so deploy to localnet now.
 
 Navigate to `cash-app-clone/cash-app` in your terminal.
+
+```shell
+solana-test-validator
+```
+
+This runs a local test validator to simulate the solana blockchain environment on your own machine. Note: You cannot deploy to localnet unless your test validator is running.
 
 ```shell
 anchor build
 ```
 
-This command builds your program's workspace. It targets Solana's BPF runtime and emits each program's IDL in the `target/idl` folder and the corresponding typescript types in the `target/types` folder. If your program is doesn't build, then there is an error in your code that needs to be addressed.
+This builds your program's workspace. It targets Solana's BPF runtime and emits each program's IDL in the `target/idl` folder and the corresponding typescript types in the `target/types` folder. If your program is doesn't build, then there is an error in your code that needs to be addressed.
 
 ```shell
 anchor deploy --provider.cluster localnet
@@ -567,7 +578,7 @@ This command deploys your program to the specified cluster and generates a progr
 anchor keys sync
 ```
 
-This command syncs the program's `declare_id!` pubkey with the program's actual pubkey. It specifically updates the `lib.rs` and `Anchor.toml` files.
+This syncs the program's `declare_id!` pubkey with the program's actual pubkey. It specifically updates the `lib.rs` and `Anchor.toml` files.
 
 ### Testing an Anchor Program
 
@@ -594,9 +605,9 @@ describe("cash-app", () => {
 });
 ```
 
-The `provider` variable will now be able to faciliate interactions between your application (client-side) and the Solana blockchain, which includes a wallet that holds the keypair used to sign transactions.
+`provider` enables you to faciliate interactions between your application (client-side) and the Solana blockchain, which includes a wallet that holds the keypair used to sign transactions.
 
-The `program` variable now represents your Anchor program and can be used to call functions defined in your smart contract, pass in required accounts, and handle the program's data. It simplifies interacting with the Solana blockchain by abstracting many of the lower-level details.
+`program` now represents your Anchor program and can be used to call functions defined in your smart contract, pass in required accounts, and handle the program's data. It simplifies interacting with the Solana blockchain by abstracting many of the lower-level details.
 
 Next, we need to define the accounts that will be interacting with the solana program as well as their `cash_account` PDAs. `myWallet` is the provider's wallet, meaning that it is already integrated with the `AnchorProvider` and is configured when the `provider` is initialized. Since `yourWallet` is a new wallet being generated, it will also need to be funded with SOL by having the wallet request an airdrop.
 
@@ -658,7 +669,7 @@ console.log(`Initialized your account : ${initYou}' `);
 await anchor.getProvider().connection.confirmTransaction(initYou);
 ```
 
-By calling the program namespace `program.methods`, you are able to interact with the instructions of that program. When a transaction is sent using the `provider` _(or methods derived from it, such as `program.rpc()`)_, the signing by `myWallet` is implicitly handled. The `provider` automatically includes the wallet configured with it _(myWallet in this case)_ as a signer for any transactions it sends. This means you do not need to manually specify `myWallet` in the `.signers()` array when constructing a transaction, because it's inherently assumed to be a signer through the provider's configuration. However, `youWallet` is a new keypair which is not automatically associated with the `provider`, so must explicitly tell Anchor to use yourWallet for signing any transaction where it's required.
+By calling the program namespace `program.methods`, you are able to interact with the instructions of that program. When a transaction is sent using the `provider` _(or methods derived from it, such as `program.rpc()`)_, the signing by `myWallet` is implicitly handled. The `provider` automatically includes the wallet configured with it _(myWallet in this case)_ as a signer for any transactions it sends. This means you do not need to manually specify `myWallet` in the `.signers()` array when constructing a transaction, because it's inherently assumed to be a signer through the provider's configuration. However, `yourWallet` is a new keypair which is not automatically associated with the `provider`, so must explicitly tell Anchor to use yourWallet for signing any transaction where it's required.
 
 Since any other instrcution call is handled exaclty as described above, you can complete this test example independently. To review your work, you can see the completed test file here.
 // FIXME: Add github link to anchor tests
@@ -697,11 +708,11 @@ Install the build on your android emmulator and keep it running in a seperate wi
 
 We can create a custom hook that accepts the public key of the user as a parameter that is designed to interact with our deployed solana program. By providing the program ID, the rpc endpoint that the program was deployed to, the IDL of the program, and the PDA of a specified user, we can create the logic required to manage interactions with the solana program. Create a new file under `utils/useCashAppProgram.tsx`, to implement this function.
 
+Since we want this app to be publically available, deploy your program to devnet and use that public key instead of `11111111111111111111111111111111`.
+
 ```typescript
 export function UseCashAppProgram(user: PublicKey) {
-  const cashAppProgramId = new PublicKey(
-    "BxCbQks4iaRvfCnUzf3utYYG9V53TDwVLxA6GGBnhci4"
-  );
+  const cashAppProgramId = new PublicKey("11111111111111111111111111111111");
 
   const [connection] = useState(
     () => new Connection("https://api.devnet.solana.com")
@@ -709,7 +720,7 @@ export function UseCashAppProgram(user: PublicKey) {
 
   const [cashAppPDA] = useMemo(() => {
     const accountSeed = [Buffer.from("cash_account"), user.toBuffer()];
-    return PublicKey.findProgramAddressSync([accountSeed], cashAppProgramId);
+    return PublicKey.findProgramAddressSync(accountSeed, cashAppProgramId);
   }, [cashAppProgramId]);
 
   const cashAppProgram = useMemo(() => {
@@ -735,7 +746,7 @@ export function UseCashAppProgram(user: PublicKey) {
 
 Since there is only one `cash_account` account per public key, it is easy to calculate the `cashAccountPDA` by taking in the user's public key as a parameter and using that to calculate what the public key of the cash app PDA for each individual user is.
 
-To be able to get information for all the `pending_request` accounts associated with a specifc public key, we'll need a little more information. So we'll create another function that takes in the count and the
+<!-- To be able to get information for all the `pending_request` accounts associated with a specifc public key, we'll need a little more information. So we'll create another function that takes in the count and the -->
 
 Since the IDL is generated as a JSON file when building the program, we can just import it to this file.
 
@@ -745,13 +756,13 @@ This funciton returns:
 - `cashAppProgramID` - The public key of the deployed solana program on devnet
 - `cashAppProgram` - The cash app program which provides the IDL deserialized client representation of an Anchor program.
 
-The `Program` class is an import from `@coral-xyz/anchor`. This API is a one stop shop for all things related to communicating with on-chain programs. It enables sending transactions, deserializing accounts, decoding instruction data, listening to events, etc.
+The `Program` class provides the IDL deserialized client representation of an Anchor program. This API is a one stop shop for all things related to communicating with on-chain programs. It enables sending transactions, deserializing accounts, decoding instruction data, listening to events, etc.
 
-The `Program` object provides `namespaces`, which map one-to-one to program methods and accounts, which we will be using a lot later in this project. The `namespace` is generally used as follows: `program.<namespace>.<program-specifc-method>`
+The `cashAppProgram` object, created from the `Program` class, provides a set of dynamically generated properties, known as `namespaces`. `Namespaces` map one-to-one to program methods and accounts, which we will be using a lot later in this project. The `namespace` is generally used as follows: `program.<namespace>.<program-specifc-method>`
 
 ### Styling and Themes
 
-React Native uses a styling system that is based on the standard CSS properties but adapted for mobile development. Styles are written in JavaScript using objects, which allows the benefit of leveraging JavaScript's power to dynamically generate styles. In order to mimic the look and feel of cash app, we'll create a StyleSheet Object that we can use throughout this dApp. This will create a monochrome greyscale color pallete with bold text and rounded shapes.
+React Native uses a styling system that is based on the standard CSS properties, but it's specifically tailored for mobile development. Styles are defined using JavaScript objects, which enables dynamic generation of styles by leveraging JavaScript's capabilities. To achieve a design that mimics the look and feel of cash app, we'll create a StyleSheet Object that will be use throughout this dApp. This style sheet will feature a monochrome grayscale color palette, bold text, and rounded shapes.
 
 ```jsx
 import { StyleSheet, Dimensions } from "react-native";
@@ -837,7 +848,7 @@ const styles = StyleSheet.create({
 export default styles;
 ```
 
-Along with setting the `StyleSheet`, we also need to update the theme of the dApp. A theme creates a more uniform look and feel throughout the entire application. Navigate to `App.tsx`, and update the code to only use `DarkTheme`. You should now see the template update to a dark background with light text and a dark navigation bar with light icons.
+Along with setting the `StyleSheet`, we also need to update the theme. A theme creates a more uniform look and feel throughout the entire application. Navigate to `App.tsx`, and update the code to only use `DarkTheme`.
 
 ### Navigation Bar and Pages Set up
 
@@ -909,11 +920,13 @@ export function HomeScreen() {
 
 ### Creating Components
 
-Throughout this project, we'll be using a modular approach to building features, so we can focus on one component at a time.
+Throughout this guide, we'll be using a modular approach to building features, so we can focus on one component at a time.
+
+#### Account Balance Component
 
 Let's start with the home screen. To mimic cash app, all we need is a container that displays your account balance, a button to deposit funds into your account, and a button to withdraw funds from your account.
 
-In the expo template we are using, there is already similar funcitonality. However, this code is for your connected wallet balance rather than the cash account's balance. So we need to connect this feature to our deployed solana program and query that balance instead.
+In the expo template we are using, there is already similar funcitonality. However, this code is for your connected wallet balance rather than the cash account's balance. So we need to connect this feature to our deployed solana program and query the balance of the user's `cash_account` instead.
 
 First simplify the home screen to just:
 
@@ -942,7 +955,7 @@ export function HomeScreen() {
 }
 ```
 
-Then click into `AccountDetailFeature` and update the styling to use `cardContainer`, add in a "Cash Balance" label for the card container, and delete teh `AccountTokens` component. as shown below:
+Then click into `AccountDetailFeature` and update the styling to use `cardContainer`, add in a "Cash Balance" label for the card container, and delete the `AccountTokens` component, as shown below:
 
 ```typescript
 export function AccountDetailFeature() {
@@ -971,7 +984,7 @@ export function AccountDetailFeature() {
 
 NOTE: The `StyleSheet` that we created earlier should be imported to every page.
 
-Now click into the `AccountBalance` function. We need to change this to query the cash account rather than the user's connected wallet. All that needs to be changed is the public key that is being passed through the `useGetBalance` function. We can grab the `cashAppPDA` from the `UseCashAppProgram` function we created earlier.
+Now click into the `AccountBalance` function. To update this query, we simply need to change the public key that is being passed through the `useGetBalance` function. We can grab the `cashAppPDA` from the `UseCashAppProgram` function we created earlier.
 
 ```typescript
 export function AccountBalance({ address }: { address: PublicKey }) {
@@ -999,7 +1012,7 @@ export function AccountBalance({ address }: { address: PublicKey }) {
 }
 ```
 
-### Using Namespaces
+#### Deposit and Withdraw Components
 
 Next, we need to update the buttons to deposit and withdraw funds. Go to the `AccountButtonGroup` function.
 
@@ -1096,7 +1109,11 @@ Npm packages to be installed and imported:
 - @coral-xyz/anchor
 - @solana/web3.js
 
-Now we can connect these functions to buttons on the UI. We'll follow a very similar structure to the current `AccountButtonGroup` function, but we need different functionality. So delete everything within the funciton. Since cash app also uses modals when clicking on the "Add Cash" and "Cash Out" buttons, we'll have a withdraw and deposit modal. We'll also need to take in a user input value for the amount to be deposited or withdrawn. We'll also need the `depositFunds` and `withdrawFunds` functions we just created.
+Now we can connect these functions to buttons on the UI.
+
+We'll follow a very similar structure to the current `AccountButtonGroup` function, but we need different functionality. So delete everything within the funciton.
+
+Since cash app also uses modals when clicking on the "Add Cash" and "Cash Out" buttons, we'll have a withdraw and deposit modal. We'll also need to take in a user input value for the amount to be deposited or withdrawn. Lastly, we'll need to call the `depositFunds` and `withdrawFunds` functions we just created.
 
 ```typescript
 export function AccountButtonGroup({ address }: { address: PublicKey }) {
@@ -1258,7 +1275,9 @@ export function AccountButtonGroup({ address }: { address: PublicKey }) {
 
 That wraps up all the functionality we need on the home screen for a cash app clone. Now we can move onto the pay screen, which involves transfering funds from one user to another.
 
-Now lets create the components needed for the pay screen. In cash app, the pay screen is simply a key pad with `request` and `pay` buttons that redirect you to another screen.
+#### Payment Screen
+
+In cash app, the payment screen is simply a key pad with `request` and `pay` buttons that take the user input value and redirects you to another screen.
 
 So the pay screen is mainly some UI work. We need to be able to type in a numerical value via a keyboard, handle the input value, select currency via a small modal, and navigate to the request and pay pages via buttons. Here is the code below:
 
@@ -1410,14 +1429,14 @@ const App: React.FC<Props> = ({ navigation }) => {
 };
 ```
 
-Now the request and pay pages is where the real logic comes in and the program interaction.
+#### Pay Button
 
-For the pay page, we'll need to implement the `transferFunds` function from the cash app solana program. To do this, we'll be using the same process that was described for `depositFunds`. However, the `TransferFunds` struct described in the CashApp Solana Program requires 2 accounts rather than the one account that is required for `depositFunds`. So what needs to change is simply to add calculations of the PDAs of both the sender account and the recipient's account, as shown below:
+For the pay page, we'll need to call the `transferFunds` function from the cash app solana program. To do this, we'll be using the same process that was described for `depositFunds`. However, the `TransferFunds` struct described in the CashApp Solana Program requires 2 `cash_account` accounts rather than the one account that is required for `depositFunds`. So what needs to change is simply to add calculations of the PDAs of both the sender account and the recipient's account, as shown below:
 
 ```typescript
 const [recipientPDA] = useMemo(() => {
-  const counterSeed = recipient.toBuffer();
-  return PublicKey.findProgramAddressSync([counterSeed], cashAppProgramId);
+  const recipientSeed = [Buffer.from("cash-account"), recipient.toBuffer()];
+  return PublicKey.findProgramAddressSync([recipientSeed], cashAppProgramId);
 }, [cashAppProgramId]);
 
 const transferInstruction = await program.methods
@@ -1431,6 +1450,26 @@ const transferInstruction = await program.methods
 ```
 
 In order to calculate the recipient's PDA, the public key of the recipient must be passed through as a parameter of the `transferFunds` function, along with the amount to transfer and the public key of the signer.
+
+#### Request Button
+
+For the request page, we'll need to call the `newRequest` function from the cash app solana program. This function also requires multple accounts. Here you'll need the `pending_request` account and the `cash_account` of the signer.
+
+```typescript
+const [pendingRequest] = useMemo(() => {
+  const pendingRequestSeed = [Buffer.from("pending-request"), .toBuffer()];
+  return PublicKey.findProgramAddressSync([pendingRequestSeed], cashAppProgramId);
+}, [cashAppProgramId]);
+
+const transferInstruction = await program.methods
+  .transferFunds(pubkey, newTransferAmount)
+  .accounts({
+    user: authorizationResult.publicKey,
+    pendingRequest: recipientPDA,
+    cashAccount: cashAppPDA,
+  })
+  .instruction();
+```
 
 ## Enabling QR Code functionality with Solana Pay
 
@@ -1629,9 +1668,9 @@ const transferFunds = useCallback(
         const { pubkey } = getDomainKeySync(userName);
 
         const [recipientPDA] = useMemo(() => {
-          const counterSeed = pubkey.toBuffer();
+          const recipientSeed = pubkey.toBuffer();
           return PublicKey.findProgramAddressSync(
-            [counterSeed],
+            [recipientSeed],
             cashAppProgramId
           );
         }, [cashAppProgramId]);
